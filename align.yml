@@ -1,0 +1,8 @@
+name: align
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - blast-legacy
+  - minimap2
