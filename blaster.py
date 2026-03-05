@@ -11,7 +11,7 @@ parser.add_argument('--build', default='build',
 parser.add_argument('--cpus', type=int, default=4, help='[%(default)i]')
 parser.add_argument('--testing', action='store_true')
 arg = parser.parse_args()
-
+os.system(f'mkdir -p {arg.build}')
 if not os.path.exists(f'{arg.build}/db.fa.nsq'):
 	os.system(f'mkdir -p {arg.build}/blast')
 	os.system(f'gunzip -c {arg.mRNA_file} > {arg.build}/db.fa')
