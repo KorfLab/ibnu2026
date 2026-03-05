@@ -14,8 +14,8 @@ arg = parser.parse_args()
 
 if not os.path.exists(f'{arg.build}/db.fa.nsq'):
 	os.system(f'mkdir -p {arg.build}/blast')
-	os.system(f'gunzip -c {arg.mRNA_file} > build/db.fa')
-	os.system(f'formatdb -p F -i build/db.fa')
+	os.system(f'gunzip -c {arg.mRNA_file} > {arg.build}/db.fa')
+	os.system(f'formatdb -p F -i {arg.build}/db.fa')
 
 params = ' '.join((
 	'-p blastn',
