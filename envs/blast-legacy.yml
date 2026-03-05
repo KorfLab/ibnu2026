@@ -1,0 +1,8 @@
+name: blast-legacy
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - blast-legacy
+  - time

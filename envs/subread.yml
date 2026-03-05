@@ -1,8 +1,8 @@
-name: align
+name: subread
 channels:
   - conda-forge
   - bioconda
   - defaults
 dependencies:
-  - blast-legacy
-  - minimap2
+  - subread
+  - time

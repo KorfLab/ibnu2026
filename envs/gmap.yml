@@ -1,0 +1,8 @@
+name: gmap
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - gmap
+  - time

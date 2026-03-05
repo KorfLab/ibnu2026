@@ -1,0 +1,8 @@
+name: pblat
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - pblat
+  - time
