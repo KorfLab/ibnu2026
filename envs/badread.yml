@@ -1,0 +1,8 @@
+name: badread
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - badread
+  - time
