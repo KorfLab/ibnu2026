@@ -9,19 +9,20 @@ import sys
 import korflab
 
 def run(cli):
-	pid = os.getpid()
-	tempfile = f'{DIR}/temp.{pid}'
-	print(cli, file=sys.stderr)
-	args = f'{TIMER} {cli}'.split()
-	
-	with open(tempfile, 'w') as fp:
-		result = subprocess.run(args, stderr=fp)
+	match platform.system():
+		case 'Linux':  time = '/usr/bin/time -v'
+		case 'Darwin': time = '/usr/bin/time -l'
+		case _: sys.exit('error, OS not recognized')
+
+	tempfile = f'{DIR}/temp.{os.getpid()}' # saving for debugging
+	tokens = f'{time} {cli}'.split()
+	with open(tempfile, 'w') as fp: result = subprocess.run(tokens, stderr=fp)
 	if result.stdout is not None: sys.exit('why is there stdout?')
-	if result.returncode != 0: sys.exit(f'FAILED, see {tempfile}')
+	if result.returncode != 0: sys.exit(f'**FAILED**\n{cli}\nSee {tempfile}')
 
 	runstats = {}
 	with open(tempfile) as fp:
-		if TIMER == '/usr/bin/time -v': # Linux
+		if time == '/usr/bin/time -v': # Linux
 			for line in fp:
 				if re.match(r'\s+User', line):
 					runstats['utime'] = float(line.split()[-1])
@@ -29,7 +30,7 @@ def run(cli):
 					runstats['stime'] = float(line.split()[-1])
 				elif re.match(r'\s+Maximum', line):
 					runstats['rsize'] = int(line.split()[-1])
-		elif TIMER == '/usr/bin/time -l': # Darwin
+		elif time == '/usr/bin/time -l': # Darwin
 			for line in fp:
 				m = re.match(r'\s+(\S+) real\s+(\S+) user\s+(\S+) sys', line)
 				if m:
@@ -80,7 +81,6 @@ def overlap(c1, b1, e1, c2, b2, e2):
 	if e1 < b2 or e2 < b1: return False
 	return True
 
-# the question of how much is _supposed_ to align is not addressed...
 def proc_alignments(aligns, truth):
 
 	check = {}
@@ -99,11 +99,11 @@ def proc_alignments(aligns, truth):
 		c1 = m.group(1)
 		b1 = int(m.group(2))
 		e1 = int(m.group(3))
-		
+
 		if check[tag] is None:
 			data.append(0)
 			continue # missed entirely
-		
+
 		c2, b2, e2 = check[tag]
 		if not overlap(c1, b1, e1, c2, b2, e2):
 			data.append(0)
@@ -113,7 +113,7 @@ def proc_alignments(aligns, truth):
 		den = max(e1, e2) - min(b1, b2) +1
 		pct = num / den
 		data.append(pct)
-	
+
 	return data
 
 def sam2alignments(file):
@@ -210,33 +210,40 @@ def test_subread(gfile, rfile, cpus, truth):
 ## PROBLEMATIC TESTERS ##
 #########################
 
-def test_bowtie2(gfile, rfile, cpus):
-	# requires fastq
-	pass
-
-def test_gmap(gfile, rfile, cpus):
+def test_gmap(gfile, rfile, cpus, truth):
+	# something about directories and naming
 	r1 = run(f'conda run -n gmap gmap_build -d {gfile}-gmap -D . {gfile}')
 	r2 = run(f'conda run -n gmap {rfile} -d {gfile}-gmap -D . -f samse -t {cpus} > {rfile}.gmap')
-	cpu = r1['utime'] + r1['stime'] + r2['utime'] + r2['stime']
-	mem = max(r1['rsize'], r2['rsize'])
-	return align_stats(sam2alignments(f'{rfile}.gmap')), cpu, mem
+	raw = proc_alignments(sam2alignments(f'{rfile}.gmap'), truth)
+	return {
+		'cpu': r1['utime'] + r1['stime'] + r2['utime'] + r2['stime'],
+		'mem': max(r1['rsize'], r2['rsize']),
+		'raw': raw,
+	}
 
-def test_pblat(gfile, rfile, cpus):
+def test_pblat(gfile, rfile, cpus, truth):
 	# fails on MacOS with Bus error when threads > 1
+	if platform.system() == 'Darwin': cpus = 1
+
 	r1 = run(f'conda run -n pblat pblat {gfile} {rfile} {rfile}.pblat -threads={cpus}')
 	cpu = r1['utime'] + r1['stime']
 	mem = r1['rsize']
-	return align_stats(sam2alignments(f'{rfile}.pblat')), cpu, mem
+	sys.exit('test pblat')
 
-def test_star(gfile, rfile, cpus):
+def test_star(gfile, rfile, cpus, truth):
 	# fails on MacOS, unable to run cat
+	if platform.system() == 'Darwin':
+		return {'cpu': 0, 'mem': 0,'raw': [0] * len(truth)}
+
 	r1 = run(f'conda run -n star STAR --runMode genomeGenerate --genomeDir {gfile}-star --genomeFastaFiles {gfile} --genomeSAindexNbases 8')
 	r2 = run(f'conda run -n star STAR --genomeDir {gfile}-star --readFilesIn {rfile} --readFilesCommand cat --outFileNamePrefix {rfile}.star --runThreadN {cpus}')
 	os.rename(f'{rfile}.starAligned.out.sam', f'{rfile}.star')
-	cpu = r1['utime'] + r1['stime'] + r2['utime'] + r2['stime']
-	mem = max(r1['rsize'], r2['rsize'])
-	return align_stats(sam2alignments(f'{rfile}.star')), cpu, mem
-
+	raw = proc_alignments(sam2alignments(f'{rfile}.star'), truth)
+	return {
+		'cpu': r1['utime'] + r1['stime'] + r2['utime'] + r2['stime'],
+		'mem': max(r1['rsize'], r2['rsize']),
+		'raw': raw,
+	}
 
 #########
 ## CLI ##
@@ -262,28 +269,25 @@ if not os.path.exists(f'{DIR}/genome.fa'):
 DIR = os.path.abspath(DIR)
 print(f'Working directory: {DIR}', file=sys.stderr)
 
-## set up TIMER
-match platform.system():
-	case 'Linux':  TIMER = '/usr/bin/time -v'
-	case 'Darwin': TIMER = '/usr/bin/time -l'
-	case _: sys.exit('error, OS not recognized')
+## set up experiment
 
-## main loop
 random.seed(arg.seed)
 tests = (
-	('bbm', test_bbmap),
-	('bst', test_blast),
+#	('bbm', test_bbmap),
+#	('bst', test_blast),
 #	('bwa', test_bwa),
 #	('ht2', test_hisat2),
 #	('mm2', test_minimap2),
 #	('seg', test_segemehl),
 #	('sub', test_subread),
 
-#	('bt2', test_bowtie2),
 #	('gmp', test_gmap),
+
 #	('pbt', test_pblat),
 #	('str', test_star),
 )
+
+## main loop
 for err_rate in range(3):
 	gfile = f'{DIR}/genome.fa'
 	rfile = f'{DIR}/reads.{arg.seed}.{err_rate}.fa'
