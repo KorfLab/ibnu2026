@@ -45,15 +45,17 @@ def run(cli):
 def simulate_reads(infile, outfile, rlen, xcov, rate):
 	rate /= 100
 	truth = []
+	uid = 0
 	with open(outfile, 'w') as fp:
 		for defline, seq in korflab.readfasta(infile):
 			chrom = defline.split()[0]
 			rnum = int(len(seq) * xcov / rlen)
 			for i in range(rnum):
+				uid += 1
 				pos = random.randint(0, len(seq) - rlen)
 				if 'NN' in seq[pos:pos+rlen]: continue
 				rseq = []
-				rdef = f'>{chrom}:{pos+1}-{pos+rlen}'
+				rdef = f'>r{uid}|{chrom}:{pos+1}-{pos+rlen}'
 				for j in range(rlen):
 					if random.random() < rate:
 						rseq.append(random.choice('acgt'))
@@ -87,7 +89,8 @@ def proc_alignments(aligns, truth):
 		tag = f'{chrom}:{beg}-{end}{strand}'
 		check[tag] = None
 
-	for query, c2, b2, e2 in aligns:
+	for defline, c2, b2, e2 in aligns:
+		uid, query = defline.split('|')
 		if query not in check: sys.exit('bad programmer')
 		if check[query] is not None: continue # use first/best alignment found
 		check[query] = (c2, int(b2), int(e2))
@@ -106,7 +109,7 @@ def proc_alignments(aligns, truth):
 		c2, b2, e2 = check[tag]
 		if not overlap(c1, b1, e1, c2, b2, e2):
 			data.append(0)
-			continue # paralogs...
+			continue # found a paralog
 
 		num = min(e1, e2) - max(b1, b2) +1
 		den = max(e1, e2) - min(b1, b2) +1
@@ -284,26 +287,26 @@ if not os.path.exists(f'{DIR}/genome.fa'):
 DIR = os.path.abspath(DIR)
 print(f'Working directory: {DIR}', file=sys.stderr)
 
-## set up experiment
+## programs and testers
 random.seed(arg.seed)
 tests = (
-	('bbm', test_bbmap),
+#	('bbm', test_bbmap),
 	('bst', test_blast),
-	('bwa', test_bwa),
-	('ht2', test_hisat2),
+#	('bwa', test_bwa),
+#	('ht2', test_hisat2),
 #	('gmp', test_gmap),
-	('mm2', test_minimap2),
+#	('mm2', test_minimap2),
 #	('pbt', test_pblat),
-	('seg', test_segemehl),
+#	('seg', test_segemehl),
 #	('str', test_star),
 #	('sub', test_subread),
 )
 
-## main loop
+## Experiment 1: increasing error rate
 cov_graph = {}
 mis_graph = {}
 hit_graph = {}
-for err in range(11):
+for err in (0, 5, 10):
 	if err not in cov_graph: cov_graph[err] = {}
 	if err not in mis_graph: mis_graph[err] = {}
 	if err not in hit_graph: hit_graph[err] = {}
@@ -335,3 +338,53 @@ for graph, name in zip((cov_graph, mis_graph, hit_graph), graph_names):
 			for prog in graph[err]:
 				print(f'{graph[err][prog]:.3f}', end='\t', file=fp)
 			print(file=fp)
+
+print('Experiment 1 complete')
+
+## Experiment 2: badread simulated reads
+badfq = f'{DIR}/reads.badread.fq'
+badfa = f'{DIR}/reads.badread.fa'
+os.system(f'conda run -n badread badread simulate --reference {arg.genome} --quantity {arg.x}x --length {arg.rlen},0 --junk_reads 0 --random_reads 0 --chimeras 0 --seed {arg.seed} > {badfq} 2> /dev/null')
+uid = 0
+truth = []
+with open(badfq) as ifp, open(badfa, 'w') as ofp:
+	while True:
+		try: header = next(ifp)
+		except: break
+		seq = next(ifp)
+		plus = next(ifp)
+		qual = next(ifp)
+		f = header.split()
+		uid += 1
+		chrom, strand, beg_end = f[1].split(',')
+		beg, end = beg_end.split('-')
+		beg = int(beg)
+		end = int(end)
+		strand = strand[0]
+		print(f'>r{uid}|{chrom}:{beg_end}{strand}', file=ofp)
+		print(seq, file=ofp, end='')
+		truth.append( (chrom, beg, end, strand) )
+
+for prog, tester in tests:
+	result = tester(f'{DIR}/genome.fa', badfa, arg.cpus, truth)
+	print(result)
+
+# negative strand alignments have a problem
+
+sys.exit('exp 2 done')
+
+
+
+
+
+"""
+TO DO
+
+x	UIDs on reads
+x	badread
+	automated graphs
+		experiment 1
+		experiment 2
+	genome vs. transcriptome
+
+"""
