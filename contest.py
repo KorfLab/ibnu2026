@@ -9,6 +9,13 @@ import sys
 
 import korflab
 
+def chrom_lengths(file):
+	chrlen = {}
+	for defline, seq in korflab.readfasta(file):
+		chrid = defline.split()[0]
+		chrlen[chrid] = len(seq)
+	return chrlen
+
 def run(cli):
 	match platform.system():
 		case 'Linux':  time = '/usr/bin/time -v'
@@ -347,6 +354,8 @@ badfa = f'{DIR}/reads.badread.fa'
 os.system(f'conda run -n badread badread simulate --reference {arg.genome} --quantity {arg.x}x --length {arg.rlen},0 --junk_reads 0 --random_reads 0 --chimeras 0 --seed {arg.seed} > {badfq} 2> /dev/null')
 uid = 0
 truth = []
+chrlen = chrom_lengths(arg.genome)
+print(chrlen)
 with open(badfq) as ifp, open(badfa, 'w') as ofp:
 	while True:
 		try: header = next(ifp)
@@ -361,7 +370,10 @@ with open(badfq) as ifp, open(badfa, 'w') as ofp:
 		beg = int(beg)
 		end = int(end)
 		strand = strand[0]
-		print(f'>r{uid}|{chrom}:{beg_end}{strand}', file=ofp)
+		if strand == '-':
+			beg = chrlen[chrom] - beg
+			end = chrlen[chrom] - end
+		print(f'>r{uid}|{chrom}:{beg}-{end}{strand}', file=ofp)
 		print(seq, file=ofp, end='')
 		truth.append( (chrom, beg, end, strand) )
 
