@@ -3,6 +3,7 @@ import os
 import platform
 import random
 import re
+import statistics
 import subprocess
 import sys
 
@@ -15,10 +16,8 @@ def run(cli):
 		case _: sys.exit('error, OS not recognized')
 
 	tempfile = f'{DIR}/temp.{os.getpid()}' # saving for debugging
-	tokens = f'{time} {cli}'.split()
-	with open(tempfile, 'w') as fp: result = subprocess.run(tokens, stderr=fp)
-	if result.stdout is not None: sys.exit('why is there stdout?')
-	if result.returncode != 0: sys.exit(f'**FAILED**\n{cli}\nSee {tempfile}')
+	if os.system(f'{time} {cli} 2> {tempfile}') != 0:
+		sys.exit(f'**FAILED**\n{cli}\nSee {tempfile}')
 
 	runstats = {}
 	with open(tempfile) as fp:
@@ -159,7 +158,7 @@ def test_blast(gfile, rfile, cpus, truth):
 
 def test_bwa(gfile, rfile, cpus, truth):
 	r1 = run(f'conda run -n bwa bwa index {gfile}')
-	r2 = run(f'conda run -n bwa bwa mem -a -t {cpus} {gfile} {rfile} > {rfile}.bwa')
+	r2 = run(f'conda run -n bwa bwa mem -a -t {cpus} -o {rfile}.bwa {gfile} {rfile}')
 	raw = proc_alignments(sam2alignments(f'{rfile}.bwa'), truth)
 	return {
 		'cpu': r1['utime'] + r1['stime'] + r2['utime'] + r2['stime'],
@@ -178,7 +177,7 @@ def test_hisat2(gfile, rfile, cpus, truth):
 	}
 
 def test_minimap2(gfile, rfile, cpus, truth):
-	r1 = run(f'conda run -n minimap2 minimap2 -a {gfile} {rfile} -t {cpus} > {rfile}.minimap2')
+	r1 = run(f'conda run -n minimap2 minimap2 -a {gfile} {rfile} -t {cpus} -o {rfile}.minimap2')
 	raw = proc_alignments(sam2alignments(f'{rfile}.minimap2'), truth)
 	return {
 		'cpu': r1['utime'] + r1['stime'] ,
@@ -211,9 +210,12 @@ def test_subread(gfile, rfile, cpus, truth):
 #########################
 
 def test_gmap(gfile, rfile, cpus, truth):
-	# something about directories and naming
-	r1 = run(f'conda run -n gmap gmap_build -d {gfile}-gmap -D . {gfile}')
-	r2 = run(f'conda run -n gmap {rfile} -d {gfile}-gmap -D . -f samse -t {cpus} > {rfile}.gmap')
+	# MacOS error permission denied in /var/folders...
+	if platform.system() == 'Darwin':
+		return {'cpu': 0, 'mem': 0,'raw': [0] * len(truth)}
+		
+	r1 = run(f'conda run -n gmap gmap_build --genomedb genome-gmap --genomedir {DIR} {gfile}')
+	r2 = run(f'conda run -n gmap {rfile} --genomedb genome-gmap --genomedir {DIR} -f samse -t {cpus} > {rfile}.gmap')
 	raw = proc_alignments(sam2alignments(f'{rfile}.gmap'), truth)
 	return {
 		'cpu': r1['utime'] + r1['stime'] + r2['utime'] + r2['stime'],
@@ -225,10 +227,24 @@ def test_pblat(gfile, rfile, cpus, truth):
 	# fails on MacOS with Bus error when threads > 1
 	if platform.system() == 'Darwin': cpus = 1
 
-	r1 = run(f'conda run -n pblat pblat {gfile} {rfile} {rfile}.pblat -threads={cpus}')
-	cpu = r1['utime'] + r1['stime']
-	mem = r1['rsize']
-	sys.exit('test pblat')
+	r1 = run(f'conda run -n pblat pblat {gfile} {rfile} {rfile}.pblat -threads={cpus} > {rfile}.stdout')
+	alignments = []
+	with open(f'{rfile}.pblat') as fp:
+		for _ in range(5): line = next(fp)
+		for line in fp:
+			f = line.split()
+			query = f[9]
+			chrom = f[13]
+			beg = int(f[15])
+			end = int(f[16])			
+			alignments.append( (query, chrom, beg, end) )
+	
+	raw = proc_alignments(alignments, truth)
+	return {
+		'cpu': r1['utime'] + r1['stime'] ,
+		'mem': r1['rsize'],
+		'raw': raw,
+	}
 
 def test_star(gfile, rfile, cpus, truth):
 	# fails on MacOS, unable to run cat
@@ -258,7 +274,6 @@ parser.add_argument('--x', type=float, default=0.1,
 parser.add_argument('--cpus', type=int, default=4, help='[%(default)i]')
 parser.add_argument('--build', default='build', help='[%(default)s]')
 parser.add_argument('--seed', type=int, default=1)
-parser.add_argument('--testing', action='store_true')
 arg = parser.parse_args()
 
 ## set up build directory
@@ -270,35 +285,53 @@ DIR = os.path.abspath(DIR)
 print(f'Working directory: {DIR}', file=sys.stderr)
 
 ## set up experiment
-
 random.seed(arg.seed)
 tests = (
-#	('bbm', test_bbmap),
-#	('bst', test_blast),
-#	('bwa', test_bwa),
-#	('ht2', test_hisat2),
-#	('mm2', test_minimap2),
-#	('seg', test_segemehl),
-#	('sub', test_subread),
-
+	('bbm', test_bbmap),
+	('bst', test_blast),
+	('bwa', test_bwa),
+	('ht2', test_hisat2),
 #	('gmp', test_gmap),
-
+	('mm2', test_minimap2),
 #	('pbt', test_pblat),
+	('seg', test_segemehl),
 #	('str', test_star),
+#	('sub', test_subread),
 )
 
 ## main loop
-for err_rate in range(3):
+cov_graph = {}
+mis_graph = {}
+hit_graph = {}
+for err in range(11):
+	if err not in cov_graph: cov_graph[err] = {}
+	if err not in mis_graph: mis_graph[err] = {}
+	if err not in hit_graph: hit_graph[err] = {}
 	gfile = f'{DIR}/genome.fa'
-	rfile = f'{DIR}/reads.{arg.seed}.{err_rate}.fa'
-	truth = simulate_reads(gfile, rfile, arg.rlen, arg.x, err_rate)
-	detail = {}
+	rfile = f'{DIR}/reads.{arg.seed}.{err}.fa'
+	truth = simulate_reads(gfile, rfile, arg.rlen, arg.x, err)
 	for prog, tester in tests:
 		result = tester(gfile, rfile, arg.cpus, truth)
-		detail[prog] = result['raw']
-		print(err_rate, prog, result['cpu'], result['mem'], sep='\t')
+		cpu = f'{result["cpu"]:.1f}'
+		mem = f'{result["mem"]/1e6:.1f}'
+		cov = statistics.mean(result['raw'])
+		mis = len([x for x in result['raw'] if x == 0]) / len(truth)
+		found = [x for x in result['raw'] if x != 0]
+		hit = statistics.mean(found) if found else 0
+		
+		cov_graph[err][prog] = cov
+		mis_graph[err][prog] = mis
+		hit_graph[err][prog] = hit
 
-	for i in range(len(truth)):
-		for prog in detail:
-			print(i, prog, detail[prog][i])
-		print()
+graph_names = ('coverage', 'missed', 'aligned')
+for graph, name in zip((cov_graph, mis_graph, hit_graph), graph_names):
+	with open(f'{name}.tsv', 'w') as fp:
+		print('err', end='\t', file=fp)
+		for prog in graph[0]: print(prog, end='\t', file=fp)
+		print(file=fp)
+		
+		for err in graph:
+			print(err, end='\t', file=fp)
+			for prog in graph[err]:
+				print(f'{graph[err][prog]:.3f}', end='\t', file=fp)
+			print(file=fp)
