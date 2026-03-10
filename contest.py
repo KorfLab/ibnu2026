@@ -220,10 +220,10 @@ def test_subread(gfile, rfile, cpus, truth):
 #########################
 
 def test_gmap(gfile, rfile, cpus, truth):
-	# MacOS error permission denied in /var/folders...
+	# fails with error: Permission denied... in a temporary directory
 	if platform.system() == 'Darwin':
 		return {'cpu': 0, 'mem': 0,'raw': [0] * len(truth)}
-		
+
 	r1 = run(f'conda run -n gmap gmap_build --genomedb genome-gmap --genomedir {DIR} {gfile}')
 	r2 = run(f'conda run -n gmap {rfile} --genomedb genome-gmap --genomedir {DIR} -f samse -t {cpus} > {rfile}.gmap')
 	raw = proc_alignments(sam2alignments(f'{rfile}.gmap'), truth)
@@ -246,9 +246,9 @@ def test_pblat(gfile, rfile, cpus, truth):
 			query = f[9]
 			chrom = f[13]
 			beg = int(f[15])
-			end = int(f[16])			
+			end = int(f[16])
 			alignments.append( (query, chrom, beg, end) )
-	
+
 	raw = proc_alignments(alignments, truth)
 	return {
 		'cpu': r1['utime'] + r1['stime'] ,
@@ -257,12 +257,12 @@ def test_pblat(gfile, rfile, cpus, truth):
 	}
 
 def test_star(gfile, rfile, cpus, truth):
-	# fails on MacOS, unable to run cat
+	# fails on MacOS, unable to run cat (permission issue?)
 	if platform.system() == 'Darwin':
 		return {'cpu': 0, 'mem': 0,'raw': [0] * len(truth)}
 
-	r1 = run(f'conda run -n star STAR --runMode genomeGenerate --genomeDir {gfile}-star --genomeFastaFiles {gfile} --genomeSAindexNbases 8')
-	r2 = run(f'conda run -n star STAR --genomeDir {gfile}-star --readFilesIn {rfile} --readFilesCommand cat --outFileNamePrefix {rfile}.star --runThreadN {cpus}')
+	r1 = run(f'conda run -n star STAR --runMode genomeGenerate --genomeDir {gfile}-star --genomeFastaFiles {gfile} --genomeSAindexNbases 8 > /dev/null')
+	r2 = run(f'conda run -n star STAR --genomeDir {gfile}-star --readFilesIn {rfile} --readFilesCommand cat --outFileNamePrefix {rfile}.star --runThreadN {cpus} > /dev/null')
 	os.rename(f'{rfile}.starAligned.out.sam', f'{rfile}.star')
 	raw = proc_alignments(sam2alignments(f'{rfile}.star'), truth)
 	return {
@@ -279,7 +279,7 @@ parser = argparse.ArgumentParser(description='compare alignment programs')
 parser.add_argument('genome', help='genome file *.fa.gz')
 parser.add_argument('--rlen', type=int, default=500,
 	help='read length [%(default)i]')
-parser.add_argument('--x', type=float, default=0.1,
+parser.add_argument('--x', type=float, default=1.0,
 	help='x-fold coverage of genome [%(default).1f]')
 parser.add_argument('--cpus', type=int, default=4, help='[%(default)i]')
 parser.add_argument('--build', default='build', help='[%(default)s]')
@@ -297,26 +297,24 @@ print(f'Working directory: {DIR}', file=sys.stderr)
 ## programs and testers
 random.seed(arg.seed)
 tests = (
-#	('bbm', test_bbmap),
-	('bst', test_blast),
-#	('bwa', test_bwa),
-#	('ht2', test_hisat2),
-#	('gmp', test_gmap),
-#	('mm2', test_minimap2),
-#	('pbt', test_pblat),
-#	('seg', test_segemehl),
-#	('str', test_star),
-#	('sub', test_subread),
+	('bbmap', test_bbmap),
+	('blast', test_blast),
+	('bwa', test_bwa),
+	('hisat2', test_hisat2),
+#	('gmap', test_gmap),
+	('minimap2', test_minimap2),
+	('pblat', test_pblat),
+	('segemehl', test_segemehl),
+	('star', test_star),
+	('subread', test_subread),
 )
 
 ## Experiment 1: increasing error rate
 cov_graph = {}
 mis_graph = {}
-hit_graph = {}
-for err in (0, 5, 10):
+for err in range(21):
 	if err not in cov_graph: cov_graph[err] = {}
 	if err not in mis_graph: mis_graph[err] = {}
-	if err not in hit_graph: hit_graph[err] = {}
 	gfile = f'{DIR}/genome.fa'
 	rfile = f'{DIR}/reads.{arg.seed}.{err}.fa'
 	truth = simulate_reads(gfile, rfile, arg.rlen, arg.x, err)
@@ -324,34 +322,29 @@ for err in (0, 5, 10):
 		result = tester(gfile, rfile, arg.cpus, truth)
 		cpu = f'{result["cpu"]:.1f}'
 		mem = f'{result["mem"]/1e6:.1f}'
+		print(prog, mem, cpu, sep='\t')
 		cov = statistics.mean(result['raw'])
 		mis = len([x for x in result['raw'] if x == 0]) / len(truth)
-		found = [x for x in result['raw'] if x != 0]
-		hit = statistics.mean(found) if found else 0
-		
 		cov_graph[err][prog] = cov
 		mis_graph[err][prog] = mis
-		hit_graph[err][prog] = hit
 
-graph_names = ('coverage', 'missed', 'aligned')
-for graph, name in zip((cov_graph, mis_graph, hit_graph), graph_names):
+for graph, name in zip((cov_graph, mis_graph), ('coverage', 'missed')):
 	with open(f'{name}.tsv', 'w') as fp:
 		print('err', end='\t', file=fp)
 		for prog in graph[0]: print(prog, end='\t', file=fp)
 		print(file=fp)
-		
+
 		for err in graph:
 			print(err, end='\t', file=fp)
 			for prog in graph[err]:
 				print(f'{graph[err][prog]:.3f}', end='\t', file=fp)
 			print(file=fp)
 
-print('Experiment 1 complete')
-
+"""
 ## Experiment 2: badread simulated reads
 badfq = f'{DIR}/reads.badread.fq'
 badfa = f'{DIR}/reads.badread.fa'
-os.system(f'conda run -n badread badread simulate --reference {arg.genome} --quantity {arg.x}x --length {arg.rlen},0 --junk_reads 0 --random_reads 0 --chimeras 0 --seed {arg.seed} > {badfq} 2> /dev/null')
+os.system(f'conda run -n badread badread simulate --reference {arg.genome} --quantity {arg.x}x --length {arg.rlen},1 --junk_reads 0 --random_reads 0 --chimeras 0 --seed {arg.seed} > {badfq} 2> /dev/null')
 uid = 0
 truth = []
 chrlen = chrom_lengths(arg.genome)
@@ -380,23 +373,5 @@ with open(badfq) as ifp, open(badfa, 'w') as ofp:
 for prog, tester in tests:
 	result = tester(f'{DIR}/genome.fa', badfa, arg.cpus, truth)
 	print(result)
-
-# negative strand alignments have a problem
-
-sys.exit('exp 2 done')
-
-
-
-
-
-"""
-TO DO
-
-x	UIDs on reads
-x	badread
-	automated graphs
-		experiment 1
-		experiment 2
-	genome vs. transcriptome
 
 """
