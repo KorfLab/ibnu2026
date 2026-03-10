@@ -1,6 +1,10 @@
 ibnu2026
 ========
 
+## Notes
+
+- Getting a lightning-specific error with hisat2
+
 ## Aligner Test ##
 
 Each aligner runs in its own environment, which is in the `envs` directory.
