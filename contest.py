@@ -62,7 +62,7 @@ def simulate_reads(infile, outfile, rlen, xcov, rate):
 				pos = random.randint(0, len(seq) - rlen)
 				if 'NN' in seq[pos:pos+rlen]: continue
 				rseq = []
-				rdef = f'>r{uid}|{chrom}:{pos+1}-{pos+rlen}'
+				rdef = f'>r{uid}#{chrom}:{pos+1}-{pos+rlen}'
 				for j in range(rlen):
 					if random.random() < rate:
 						rseq.append(random.choice('acgt'))
@@ -97,14 +97,14 @@ def proc_alignments(aligns, truth):
 		check[tag] = None
 
 	for defline, c2, b2, e2 in aligns:
-		uid, query = defline.split('|')
+		uid, query = defline.split('#')
 		if query not in check: sys.exit('bad programmer')
 		if check[query] is not None: continue # use first/best alignment found
 		check[query] = (c2, int(b2), int(e2))
 
 	data = []
 	for tag in check:
-		m = re.match(r'(\w+):(\d+)\-(\d+)', tag)
+		m = re.match(r'(\S+):(\d+)\-(\d+)', tag)
 		c1 = m.group(1)
 		b1 = int(m.group(2))
 		e1 = int(m.group(3))
@@ -277,6 +277,7 @@ def test_star(gfile, rfile, cpus, truth):
 
 parser = argparse.ArgumentParser(description='compare alignment programs')
 parser.add_argument('genome', help='genome file *.fa.gz')
+parser.add_argument('name', help='directory name <buiild>/contest/<name>')
 parser.add_argument('--rlen', type=int, default=500,
 	help='read length [%(default)i]')
 parser.add_argument('--x', type=float, default=1.0,
@@ -287,7 +288,7 @@ parser.add_argument('--seed', type=int, default=1)
 arg = parser.parse_args()
 
 ## set up build directory
-DIR = f'{arg.build}/contest'
+DIR = f'{arg.build}/contest/{arg.name}'
 if not os.path.exists(f'{DIR}/genome.fa'):
 	os.system(f'mkdir -p {DIR}')
 	os.system(f'gunzip -c {arg.genome} > {DIR}/genome.fa')
@@ -329,7 +330,7 @@ for err in range(21):
 		mis_graph[err][prog] = mis
 
 for graph, name in zip((cov_graph, mis_graph), ('coverage', 'missed')):
-	with open(f'{name}.tsv', 'w') as fp:
+	with open(f'{arg.name}.{name}.tsv', 'w') as fp:
 		print('err', end='\t', file=fp)
 		for prog in graph[0]: print(prog, end='\t', file=fp)
 		print(file=fp)
@@ -341,14 +342,14 @@ for graph, name in zip((cov_graph, mis_graph), ('coverage', 'missed')):
 			print(file=fp)
 
 """
+
 ## Experiment 2: badread simulated reads
 badfq = f'{DIR}/reads.badread.fq'
 badfa = f'{DIR}/reads.badread.fa'
-os.system(f'conda run -n badread badread simulate --reference {arg.genome} --quantity {arg.x}x --length {arg.rlen},1 --junk_reads 0 --random_reads 0 --chimeras 0 --seed {arg.seed} > {badfq} 2> /dev/null')
+os.system(f'conda run -n badread badread simulate --reference {arg.genome} --quantity {arg.x}x --length {arg.rlen},1 --junk_reads 0 --random_reads 0 --chimeras 0 --glitches 0,0,0 --start_adapter_seq "" --end_adapter_seq "" --seed {arg.seed} > {badfq} 2> /dev/null')
 uid = 0
 truth = []
 chrlen = chrom_lengths(arg.genome)
-print(chrlen)
 with open(badfq) as ifp, open(badfa, 'w') as ofp:
 	while True:
 		try: header = next(ifp)
@@ -366,12 +367,19 @@ with open(badfq) as ifp, open(badfa, 'w') as ofp:
 		if strand == '-':
 			beg = chrlen[chrom] - beg
 			end = chrlen[chrom] - end
-		print(f'>r{uid}|{chrom}:{beg}-{end}{strand}', file=ofp)
+		print(f'>r{uid}#{chrom}:{beg}-{end}{strand}', file=ofp)
 		print(seq, file=ofp, end='')
 		truth.append( (chrom, beg, end, strand) )
 
 for prog, tester in tests:
 	result = tester(f'{DIR}/genome.fa', badfa, arg.cpus, truth)
-	print(result)
+	cpu = f'{result["cpu"]:.1f}'
+	mem = f'{result["mem"]/1e6:.1f}'
+	print(prog, mem, cpu, sep='\t')
+	cov = statistics.mean(result['raw'])
+	mis = len([x for x in result['raw'] if x == 0]) / len(truth)
+	print(cpu, mem, cov, mis)
+	#	cov_graph[err][prog] = cov
+	#	mis_graph[err][prog] = mis
 
 """
