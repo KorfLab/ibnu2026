@@ -102,6 +102,14 @@ def proc_alignments(aligns, truth):
 		if check[query] is not None: continue # use first/best alignment found
 		check[query] = (c2, int(b2), int(e2))
 
+"""
+
+best alignment appears to be a problem with mRNA
+when there are multiple isoforms, only 1 is getting hit
+
+"""
+
+
 	data = []
 	for tag in check:
 		m = re.match(r'(\S+):(\d+)\-(\d+)', tag)
@@ -148,7 +156,7 @@ def test_bbmap(gfile, rfile, cpus, truth):
 
 def test_blast(gfile, rfile, cpus, truth):
 	r1 = run(f'conda run -n blast-legacy formatdb -p F -i {gfile}')
-	r2 = run(f'conda run -n blast-legacy blastall -p blastn -d {gfile} -i {rfile} -a {cpus} -r 1 -q -1 -G 2 -E 1 -e 1e-10 -m 8 -o {rfile}.blastn')
+	r2 = run(f'conda run -n blast-legacy blastall -p blastn -d {gfile} -i {rfile} -a {cpus} -r 1 -q -1 -G 2 -E 1 -F F -e 1e-10 -m 8 -o {rfile}.blastn')
 	alignments = []
 	with open(f'{rfile}.blastn') as fp:
 		for line in fp:
@@ -298,22 +306,22 @@ print(f'Working directory: {DIR}', file=sys.stderr)
 ## programs and testers
 random.seed(arg.seed)
 tests = (
-	('bbmap', test_bbmap),
+#	('bbmap', test_bbmap),
 	('blast', test_blast),
 	('bwa', test_bwa),
-	('hisat2', test_hisat2),
+#	('hisat2', test_hisat2),
 #	('gmap', test_gmap),
 	('minimap2', test_minimap2),
-	('pblat', test_pblat),
-	('segemehl', test_segemehl),
-	('star', test_star),
-	('subread', test_subread),
+#	('pblat', test_pblat),
+#	('segemehl', test_segemehl),
+#	('star', test_star),
+#	('subread', test_subread),
 )
 
 ## Experiment 1: increasing error rate
 cov_graph = {}
 mis_graph = {}
-for err in range(21):
+for err in range(2):
 	if err not in cov_graph: cov_graph[err] = {}
 	if err not in mis_graph: mis_graph[err] = {}
 	gfile = f'{DIR}/genome.fa'
