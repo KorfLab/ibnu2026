@@ -51,7 +51,7 @@ def run(cli):
 
 def simulate_reads(infile, outfile, rlen, xcov, rate):
 	rate /= 100
-	truth = []
+	truth = {}
 	uid = 0
 	with open(outfile, 'w') as fp:
 		for defline, seq in korflab.readfasta(infile):
@@ -62,7 +62,8 @@ def simulate_reads(infile, outfile, rlen, xcov, rate):
 				pos = random.randint(0, len(seq) - rlen)
 				if 'NN' in seq[pos:pos+rlen]: continue
 				rseq = []
-				rdef = f'>r{uid}#{chrom}:{pos+1}-{pos+rlen}'
+				rid = f'r{uid}'
+				rdef = f'>{rid}#{chrom}:{pos+1}-{pos+rlen}'
 				for j in range(rlen):
 					if random.random() < rate:
 						rseq.append(random.choice('acgt'))
@@ -77,10 +78,10 @@ def simulate_reads(infile, outfile, rlen, xcov, rate):
 				if random.random() < 0.5:
 					rseq = korflab.anti(rseq)
 					rdef += '-'
-					truth.append( (chrom, pos+1, pos+rlen, '-') )
+					truth[rid] = (chrom, pos+1, pos+rlen, '-')
 				else:
 					rdef += '+'
-					truth.append( (chrom, pos+1, pos+rlen, '+') )
+					truth[rid] = (chrom, pos+1, pos+rlen, '+')
 				print(rdef, ''.join(rseq), sep='\n', file=fp)
 	return truth
 
@@ -89,49 +90,40 @@ def overlap(c1, b1, e1, c2, b2, e2):
 	if e1 < b2 or e2 < b1: return False
 	return True
 
-def proc_alignments(aligns, truth):
-
-	check = {}
-	for chrom, beg, end, strand in truth:
-		tag = f'{chrom}:{beg}-{end}{strand}'
-		check[tag] = None
-
-	for defline, c2, b2, e2 in aligns:
-		uid, query = defline.split('#')
-		if query not in check: sys.exit('bad programmer')
-		if check[query] is not None: continue # use first/best alignment found
-		check[query] = (c2, int(b2), int(e2))
-
-"""
-
-best alignment appears to be a problem with mRNA
-when there are multiple isoforms, only 1 is getting hit
-
-"""
-
-
-	data = []
-	for tag in check:
-		m = re.match(r'(\S+):(\d+)\-(\d+)', tag)
-		c1 = m.group(1)
-		b1 = int(m.group(2))
-		e1 = int(m.group(3))
-
-		if check[tag] is None:
-			data.append(0)
-			continue # missed entirely
-
-		c2, b2, e2 = check[tag]
-		if not overlap(c1, b1, e1, c2, b2, e2):
-			data.append(0)
-			continue # found a paralog
-
-		num = min(e1, e2) - max(b1, b2) +1
-		den = max(e1, e2) - min(b1, b2) +1
-		pct = num / den
-		data.append(pct)
-
-	return data
+def proc_alignments(aligns, truths):
+	d = {}
+	for defline, chrom, beg, end in aligns:
+		rid, query = defline.split('#')
+		if rid not in d: d[rid] = []
+		d[rid].append( (chrom, beg, end) )
+	
+	missed = 0
+	paralog = 0
+	found = []
+	for rid in truths:
+		c1, b1, e1, s1 = truths[rid]
+		if rid not in d:
+			missed += 1
+			found.append(0)
+			continue
+		best_match = 0
+		best_align = None
+		for align in d[rid]:
+			c2, b2, e2 = align
+			if not overlap(c1, b1, e1, c2, b2, e2): continue
+			num = min(e1, e2) - max(b1, b2) +1
+			den = max(e1, e2) - min(b1, b2) +1
+			pct = num / den
+			if pct > best_match:
+				best_match = pct
+				best_align = align
+		if best_align is None:
+			paralog += 1
+			found.append(0)
+		else:
+			found.append(best_match)
+	
+	return statistics.mean(found), missed/len(truths), paralog/len(truths)
 
 def sam2alignments(file):
 	alignments = []
@@ -147,12 +139,8 @@ def sam2alignments(file):
 
 def test_bbmap(gfile, rfile, cpus, truth):
 	r1 = run(f'conda run -n bbmap bbmap.sh in={rfile} ref={gfile} nodisk=t threads={cpus} out={rfile}.bbmap')
-	raw = proc_alignments(sam2alignments(f'{rfile}.bbmap'), truth)
-	return {
-		'cpu': r1['utime'] + r1['stime'] ,
-		'mem': r1['rsize'],
-		'raw': raw,
-	}
+	c, m, p = proc_alignments(sam2alignments(f'{rfile}.bbmap'), truth)
+	return c, m, p, r1['utime'] + r1['stime'], r1['rsize']
 
 def test_blast(gfile, rfile, cpus, truth):
 	r1 = run(f'conda run -n blast-legacy formatdb -p F -i {gfile}')
@@ -167,61 +155,37 @@ def test_blast(gfile, rfile, cpus, truth):
 			end = int(f[9])
 			if beg > end: beg, end = end, beg
 			alignments.append( (query, chrom, beg, end) )
-	raw = proc_alignments(alignments, truth)
-	return {
-		'cpu': r1['utime'] + r1['stime'] + r2['utime'] + r2['stime'],
-		'mem': max(r1['rsize'], r2['rsize']),
-		'raw': raw,
-	}
+	c, m, p = proc_alignments(alignments, truth)
+	return c, m, p, r2['utime'] + r2['stime'], r2['rsize']
 
 def test_bwa(gfile, rfile, cpus, truth):
 	r1 = run(f'conda run -n bwa bwa index {gfile}')
 	r2 = run(f'conda run -n bwa bwa mem -a -t {cpus} -o {rfile}.bwa {gfile} {rfile}')
-	raw = proc_alignments(sam2alignments(f'{rfile}.bwa'), truth)
-	return {
-		'cpu': r1['utime'] + r1['stime'] + r2['utime'] + r2['stime'],
-		'mem': max(r1['rsize'], r2['rsize']),
-		'raw': raw,
-	}
+	c, m, p = proc_alignments(sam2alignments(f'{rfile}.bwa'), truth)
+	return c, m, p, r2['utime'] + r2['stime'],  r2['rsize']
 
 def test_hisat2(gfile, rfile, cpus, truth):
 	r1 = run(f'conda run -n hisat2 hisat2-build -f {gfile} {gfile} --quiet')
 	r2 = run(f'conda run -n hisat2 hisat2 -x {gfile} -U {rfile} -f -p {cpus} --quiet > {rfile}.hisat2')
-	raw = proc_alignments(sam2alignments(f'{rfile}.hisat2'), truth)
-	return {
-		'cpu': r1['utime'] + r1['stime'] + r2['utime'] + r2['stime'],
-		'mem': max(r1['rsize'], r2['rsize']),
-		'raw': raw,
-	}
+	c, m, p = proc_alignments(sam2alignments(f'{rfile}.hisat2'), truth)
+	return c, m, p, r2['utime'] + r2['stime'], r2['rsize']
 
 def test_minimap2(gfile, rfile, cpus, truth):
 	r1 = run(f'conda run -n minimap2 minimap2 -a {gfile} {rfile} -t {cpus} -o {rfile}.minimap2')
-	raw = proc_alignments(sam2alignments(f'{rfile}.minimap2'), truth)
-	return {
-		'cpu': r1['utime'] + r1['stime'] ,
-		'mem': r1['rsize'],
-		'raw': raw,
-	}
+	c, m, p = proc_alignments(sam2alignments(f'{rfile}.minimap2'), truth)
+	return c, m, p, r1['utime'] + r1['stime'], r1['rsize']
 
 def test_segemehl(gfile, rfile, cpus, truth):
 	r1 = run(f'conda run -n segemehl segemehl.x -x {gfile}.idx -d {gfile}')
 	r2 = run(f'conda run -n segemehl segemehl.x -i {gfile}.idx -d {gfile} -q {rfile} -t {cpus} -o {rfile}.segemehl')
-	raw = proc_alignments(sam2alignments(f'{rfile}.segemehl'), truth)
-	return {
-		'cpu': r1['utime'] + r1['stime'] + r2['utime'] + r2['stime'],
-		'mem': max(r1['rsize'], r2['rsize']),
-		'raw': raw,
-	}
+	c, m, p = proc_alignments(sam2alignments(f'{rfile}.segemehl'), truth)
+	return c, m, p, r2['utime'] + r2['stime'], r2['rsize']
 
 def test_subread(gfile, rfile, cpus, truth):
 	r1 = run(f'conda run -n subread subread-buildindex -o {gfile} {gfile}')
 	r2 = run(f'conda run -n subread subread-align -i {gfile} -r {rfile} -t 0 --SAMoutput --multiMapping -B 5 -T {cpus} -o {rfile}.subread')
-	raw = proc_alignments(sam2alignments(f'{rfile}.subread'), truth)
-	return {
-		'cpu': r1['utime'] + r1['stime'] + r2['utime'] + r2['stime'],
-		'mem': max(r1['rsize'], r2['rsize']),
-		'raw': raw,
-	}
+	c, m, p = proc_alignments(sam2alignments(f'{rfile}.subread'), truth)
+	return c, m, p, r2['utime'] + r2['stime'], r2['rsize']
 
 #########################
 ## PROBLEMATIC TESTERS ##
@@ -234,12 +198,8 @@ def test_gmap(gfile, rfile, cpus, truth):
 
 	r1 = run(f'conda run -n gmap gmap_build --genomedb genome-gmap --genomedir {DIR} {gfile}')
 	r2 = run(f'conda run -n gmap {rfile} --genomedb genome-gmap --genomedir {DIR} -f samse -t {cpus} > {rfile}.gmap')
-	raw = proc_alignments(sam2alignments(f'{rfile}.gmap'), truth)
-	return {
-		'cpu': r1['utime'] + r1['stime'] + r2['utime'] + r2['stime'],
-		'mem': max(r1['rsize'], r2['rsize']),
-		'raw': raw,
-	}
+	c, m, p = proc_alignments(sam2alignments(f'{rfile}.gmap'), truth)
+	return c, m, p, r2['utime'] + r2['stime'], r2['rsize']
 
 def test_pblat(gfile, rfile, cpus, truth):
 	# fails on MacOS with Bus error when threads > 1
@@ -257,12 +217,8 @@ def test_pblat(gfile, rfile, cpus, truth):
 			end = int(f[16])
 			alignments.append( (query, chrom, beg, end) )
 
-	raw = proc_alignments(alignments, truth)
-	return {
-		'cpu': r1['utime'] + r1['stime'] ,
-		'mem': r1['rsize'],
-		'raw': raw,
-	}
+	c, m, p = proc_alignments(alignments, truth)
+	return c, m, p, r1['utime'] + r1['stime'], r1['rsize']
 
 def test_star(gfile, rfile, cpus, truth):
 	# fails on MacOS, unable to run cat (permission issue?)
@@ -272,12 +228,8 @@ def test_star(gfile, rfile, cpus, truth):
 	r1 = run(f'conda run -n star STAR --runMode genomeGenerate --genomeDir {gfile}-star --genomeFastaFiles {gfile} --genomeSAindexNbases 8 > /dev/null')
 	r2 = run(f'conda run -n star STAR --genomeDir {gfile}-star --readFilesIn {rfile} --readFilesCommand cat --outFileNamePrefix {rfile}.star --runThreadN {cpus} > /dev/null')
 	os.rename(f'{rfile}.starAligned.out.sam', f'{rfile}.star')
-	raw = proc_alignments(sam2alignments(f'{rfile}.star'), truth)
-	return {
-		'cpu': r1['utime'] + r1['stime'] + r2['utime'] + r2['stime'],
-		'mem': max(r1['rsize'], r2['rsize']),
-		'raw': raw,
-	}
+	c, m, p = proc_alignments(sam2alignments(f'{rfile}.star'), truth)
+	return c, m, p, r2['utime'] + r2['stime'], r2['rsize']
 
 #########
 ## CLI ##
@@ -306,34 +258,30 @@ print(f'Working directory: {DIR}', file=sys.stderr)
 ## programs and testers
 random.seed(arg.seed)
 tests = (
-#	('bbmap', test_bbmap),
+	('bbmap', test_bbmap),
 	('blast', test_blast),
 	('bwa', test_bwa),
-#	('hisat2', test_hisat2),
+	('hisat2', test_hisat2),
 #	('gmap', test_gmap),
 	('minimap2', test_minimap2),
-#	('pblat', test_pblat),
-#	('segemehl', test_segemehl),
+	('pblat', test_pblat),
+	('segemehl', test_segemehl),
 #	('star', test_star),
-#	('subread', test_subread),
+	('subread', test_subread),
 )
 
 ## Experiment 1: increasing error rate
 cov_graph = {}
 mis_graph = {}
-for err in range(2):
+for err in range(21):
 	if err not in cov_graph: cov_graph[err] = {}
 	if err not in mis_graph: mis_graph[err] = {}
 	gfile = f'{DIR}/genome.fa'
 	rfile = f'{DIR}/reads.{arg.seed}.{err}.fa'
 	truth = simulate_reads(gfile, rfile, arg.rlen, arg.x, err)
 	for prog, tester in tests:
-		result = tester(gfile, rfile, arg.cpus, truth)
-		cpu = f'{result["cpu"]:.1f}'
-		mem = f'{result["mem"]/1e6:.1f}'
-		print(prog, mem, cpu, sep='\t')
-		cov = statistics.mean(result['raw'])
-		mis = len([x for x in result['raw'] if x == 0]) / len(truth)
+		cov, mis, par, cpu, mem = tester(gfile, rfile, arg.cpus, truth)
+		print(f'{prog}\t{cov:.3f}\t{mis:.3f}\t{par:.3f}\t{mem/1e6:.1f}\t{cpu:.1f}')
 		cov_graph[err][prog] = cov
 		mis_graph[err][prog] = mis
 
