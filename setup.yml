@@ -1,0 +1,8 @@
+name: setup
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python
+  - blast-legacy

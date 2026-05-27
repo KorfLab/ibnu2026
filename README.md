@@ -48,3 +48,23 @@ Read sources
 - Randomly generated reads decorated with 0-20% error
 - Mock reads created by `badread` (not done yet)
 
+## Data for short/long reads and 3' ends ##
+
+1. Use the `setup.yml` to create the setup environment.
+2. Make sure `grimoire` is in `PYTHONPATH`
+3. Make sure `grimoire/bin/haman` is in `PATH`
+4. Run `dataprep.py` on a FASTA and GFF
+
+The result is a file of semi-unique genes, each with a single,
+canonical/longest mRNA. Run `dataprep.py` like this:
+
+```
+python3 dataprep.py at1pct.fa.gz at1pct.gff3.gz AT1
+```
+
+These all end up in a files called
+
+- `AT1-genome.fa` mini chromosome
+- `AT1-genome.gff3` gff for mini chromosome
+- `AT1-mRNA.fa` transcripts only
+
